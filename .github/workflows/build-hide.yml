@@ -1,0 +1,109 @@
+name: Build NianDFM kernel module (hide patch)
+
+on:
+  push:
+    paths:
+      - 'enkernel/**'
+      - '.github/workflows/**'
+  workflow_dispatch:
+    inputs:
+      kmi:
+        description: 'KMI to build (leave empty for all)'
+        required: false
+        default: ''
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  resolve-matrix:
+    runs-on: ubuntu-latest
+    outputs:
+      kmis: ${{ steps.set.outputs.kmis }}
+    steps:
+      - id: set
+        run: |
+          set -euo pipefail
+          ALL='["android12-5.10","android13-5.15","android14-6.1","android15-6.6","android16-6.12","android17-6.18"]'
+          WANT='${{ github.event.inputs.kmi }}'
+          if [ -z "$WANT" ]; then
+            echo "kmis=$ALL" >> "$GITHUB_OUTPUT"
+          else
+            echo "kmis=[\"$WANT\"]" >> "$GITHUB_OUTPUT"
+          fi
+
+  build:
+    name: dfm.ko / ${{ matrix.kmi }}
+    needs: resolve-matrix
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    strategy:
+      fail-fast: false
+      matrix:
+        kmi: ${{ fromJson(needs.resolve-matrix.outputs.kmis) }}
+    container:
+      # 与上游 enkernel 使用同一套 DDK 镜像, 内含各 KMI 的内核源码树
+      image: ghcr.io/ylarod/ddk:${{ matrix.kmi }}-20260828
+      options: --privileged
+    defaults:
+      run:
+        shell: bash
+    env:
+      KMI: ${{ matrix.kmi }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Show patch presence
+        run: |
+          set -euo pipefail
+          echo "== hide patch markers =="
+          grep -n "MEM_IOC_HIDE_PROCESS" enkernel/abi.h
+          grep -n "mem_hide_process" enkernel/main.c
+          test -f enkernel/mem_hide.c
+          grep -c "kretprobe" enkernel/mem_hide.c
+
+      - name: Build module
+        run: |
+          set -euo pipefail
+          echo "KERNEL_SRC=${KERNEL_SRC:?not set by ddk image}"
+          make -C enkernel -j"$(nproc)" KDIR="${KERNEL_SRC}"
+          test -s enkernel/dfm.ko
+          file enkernel/dfm.ko
+
+      - name: Verify symbols present in .ko
+        run: |
+          set -euo pipefail
+          # 确认 hide 相关符号真的编进去了
+          llvm-nm enkernel/dfm.ko 2>/dev/null | grep -E 'mem_hide_(process|path|list|init|exit)' \
+            || echo "WARN: hide symbols not found by nm (may be stripped)"
+          # 确认 vermagic 与 KMI 匹配
+          modinfo enkernel/dfm.ko | grep vermagic || true
+
+      - name: Package
+        run: |
+          set -euo pipefail
+          mkdir -p out
+          OUT="dfm-${KMI}.ko"
+          cp enkernel/dfm.ko "out/$OUT"
+          llvm-strip --strip-debug "out/$OUT" || true
+          test -s "out/$OUT"
+          ls -la out/
+          cd out && sha256sum "$OUT" > "$OUT.sha256" && cat "$OUT.sha256"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: dfm-hide-${{ matrix.kmi }}
+          path: |
+            out/dfm-${{ matrix.kmi }}.ko
+            out/dfm-${{ matrix.kmi }}.ko.sha256
+          if-no-files-found: error
+          retention-days: 30

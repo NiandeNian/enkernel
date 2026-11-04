@@ -661,4 +661,64 @@ namespace dfm {
         if (g_fd < 0) return false;
         return call_ioctl(g_fd, TOUCH_IOC_GET_STATUS, (long)out) == 0;
     }
-} // namespace dfm
+    /* ------------------------------------------------------------------
+     * 隐蔽层: 进程 / 路径 隐藏
+     *
+     * 这三个命令是后加的 (命令号 38/39/40)。旧模块没实现时 ioctl 返回
+     * -ENOTTY, 这里一律返回 false, 上层据此降级到纯用户态伪装。
+     * ------------------------------------------------------------------ */
+    bool hide_process(int pid, bool hide, uint32_t* out_count) {
+        if (g_fd < 0) return false;
+        mem_hide_pid_req req{};
+        req.pid = pid;
+        req.hide = hide ? 1u : 0u;
+        if (call_ioctl(g_fd, MEM_IOC_HIDE_PROCESS, (long)&req) != 0)
+            return false;
+        if (out_count) *out_count = req.out_hidden_count;
+        return true;
+    }
+
+    bool hide_path(const char* path, bool hide, uint32_t* out_count) {
+        if (g_fd < 0 || !path || !*path) return false;
+        mem_hide_path_req req{};
+        strncpy(req.path, path, sizeof(req.path) - 1);
+        req.hide = hide ? 1u : 0u;
+        if (call_ioctl(g_fd, MEM_IOC_HIDE_PATH, (long)&req) != 0)
+            return false;
+        if (out_count) *out_count = req.out_hidden_count;
+        return true;
+    }
+
+    bool hide_list(uint32_t* out_pids, uint32_t pid_capacity, uint32_t& pid_count,
+                   char (*out_paths)[MEM_HIDE_PATH_LEN], uint32_t path_capacity,
+                   uint32_t* path_count) {
+        pid_count = 0;
+        if (path_count) *path_count = 0;
+        if (g_fd < 0) return false;
+
+        mem_hide_list_req req{};
+        if (call_ioctl(g_fd, MEM_IOC_HIDE_LIST, (long)&req) != 0)
+            return false;
+
+        const uint32_t np = req.out_pid_count < pid_capacity ? req.out_pid_count
+                                                             : pid_capacity;
+        for (uint32_t i = 0; i < np; i++) out_pids[i] = req.out_pids[i];
+        pid_count = np;
+
+        if (out_paths && path_capacity > 0) {
+            const uint32_t npath = req.out_path_count < path_capacity
+                                       ? req.out_path_count
+                                       : path_capacity;
+            for (uint32_t i = 0; i < npath; i++)
+                memcpy(out_paths[i], req.out_paths[i], MEM_HIDE_PATH_LEN);
+            if (path_count) *path_count = npath;
+        }
+        return true;
+    }
+
+    bool supports_hide() {
+        if (g_fd < 0) return false;
+        /* 用 LIST 做能力探测: 空表也算实现成功 */
+        mem_hide_list_req req{};
+        return call_ioctl(g_fd, MEM_IOC_HIDE_LIST, (long)&req) == 0;
+    }} // namespace dfm

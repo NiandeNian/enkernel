@@ -126,6 +126,24 @@ namespace dfm {
 
     /* Query kernel touch proxy state; output is zeroed on failure. */
     bool touch_get_status(struct touch_status* out);
+
+    /* ---------------------------------------------------------------
+     * 隐蔽层: 进程 / 路径 隐藏 (模块 >= 本补丁版本)
+     *
+     * hide_process(pid): pid<=0 表示当前进程。隐藏后 /proc 枚举与
+     *   按 pid 直连 (/proc/<pid>/*) 都看不到该进程。
+     * hide_path(path): 目标路径在目录枚举中被过滤。
+     * hide_list(): 查询当前隐藏集合。
+     *
+     * 限制: 内核态 for_each_process() 仍可见; 已打开的 fd 不受影响。
+     * --------------------------------------------------------------- */
+    bool hide_process(int pid, bool hide, uint32_t* out_count = nullptr);
+    bool hide_path(const char* path, bool hide, uint32_t* out_count = nullptr);
+    bool hide_list(uint32_t* out_pids, uint32_t pid_capacity, uint32_t& pid_count,
+                   char (*out_paths)[MEM_HIDE_PATH_LEN] = nullptr,
+                   uint32_t path_capacity = 0, uint32_t* path_count = nullptr);
+    /* 旧模块没有这三个命令时返回 false (ENOTTY), 上层据此降级。 */
+    bool supports_hide();
     /* Convenience read: returns a zero value on failure. Use read_memory for errors. */
     template <typename T>
     T read(int pid, uint64_t addr) {

