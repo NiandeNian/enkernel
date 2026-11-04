@@ -3,8 +3,7 @@ name: Build NianDFM kernel module (hide patch)
 on:
   push:
     paths:
-      - 'enkernel/**'
-      - '.github/workflows/**'
+      - '**'
   workflow_dispatch:
     inputs:
       kmi:
@@ -65,34 +64,34 @@ jobs:
         run: |
           set -euo pipefail
           echo "== hide patch markers =="
-          grep -n "MEM_IOC_HIDE_PROCESS" enkernel/abi.h
-          grep -n "mem_hide_process" enkernel/main.c
-          test -f enkernel/mem_hide.c
-          grep -c "kretprobe" enkernel/mem_hide.c
+          grep -n "MEM_IOC_HIDE_PROCESS" abi.h
+          grep -n "mem_hide_process" main.c
+          test -f mem_hide.c
+          grep -c "kretprobe" mem_hide.c
 
       - name: Build module
         run: |
           set -euo pipefail
           echo "KERNEL_SRC=${KERNEL_SRC:?not set by ddk image}"
-          make -C enkernel -j"$(nproc)" KDIR="${KERNEL_SRC}"
-          test -s enkernel/dfm.ko
-          file enkernel/dfm.ko
+          make -j"$(nproc)" KDIR="${KERNEL_SRC}"
+          test -s dfm.ko
+          file dfm.ko
 
       - name: Verify symbols present in .ko
         run: |
           set -euo pipefail
           # 确认 hide 相关符号真的编进去了
-          llvm-nm enkernel/dfm.ko 2>/dev/null | grep -E 'mem_hide_(process|path|list|init|exit)' \
+          llvm-nm dfm.ko 2>/dev/null | grep -E 'mem_hide_(process|path|list|init|exit)' \
             || echo "WARN: hide symbols not found by nm (may be stripped)"
           # 确认 vermagic 与 KMI 匹配
-          modinfo enkernel/dfm.ko | grep vermagic || true
+          modinfo dfm.ko | grep vermagic || true
 
       - name: Package
         run: |
           set -euo pipefail
           mkdir -p out
           OUT="dfm-${KMI}.ko"
-          cp enkernel/dfm.ko "out/$OUT"
+          cp dfm.ko "out/$OUT"
           llvm-strip --strip-debug "out/$OUT" || true
           test -s "out/$OUT"
           ls -la out/
