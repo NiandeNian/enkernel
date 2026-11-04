@@ -382,26 +382,36 @@ long mem_hide_path(void __user *arg)
 
 long mem_hide_list(void __user *arg)
 {
-    struct mem_hide_list_req req;
+    /*
+     * struct mem_hide_list_req 是 16*128 + 32*4 + 8 = 2184 字节,
+     * 直接放栈上会超过内核的 -Wframe-larger-than=2048 限制
+     * (实测报 2240 字节)。改用 kzalloc 堆分配。
+     */
+    struct mem_hide_list_req *req;
     uint32_t i;
+    long ret = 0;
 
     if (!caller_is_privileged())
         return -EPERM;
 
-    memset(&req, 0, sizeof(req));
+    req = kzalloc(sizeof(*req), GFP_KERNEL);
+    if (!req)
+        return -ENOMEM;
 
     spin_lock(&g_hide.lock);
-    req.out_pid_count = g_hide.pid_count;
+    req->out_pid_count = g_hide.pid_count;
     for (i = 0; i < g_hide.pid_count && i < MEM_HIDE_MAX_PIDS; i++)
-        req.out_pids[i] = (uint32_t) g_hide.pids[i];
-    req.out_path_count = g_hide.path_count;
+        req->out_pids[i] = (uint32_t) g_hide.pids[i];
+    req->out_path_count = g_hide.path_count;
     for (i = 0; i < g_hide.path_count && i < MEM_HIDE_MAX_PATHS; i++)
-        memcpy(req.out_paths[i], g_hide.paths[i], MEM_HIDE_PATH_LEN);
+        memcpy(req->out_paths[i], g_hide.paths[i], MEM_HIDE_PATH_LEN);
     spin_unlock(&g_hide.lock);
 
-    if (copy_to_user(arg, &req, sizeof(req)))
-        return -EFAULT;
-    return 0;
+    if (copy_to_user(arg, req, sizeof(*req)))
+        ret = -EFAULT;
+
+    kfree(req);
+    return ret;
 }
 
 int mem_hide_init(void)
