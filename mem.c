@@ -33,6 +33,71 @@
 
 /* ---- pid / module base ---- */
 
+/*
+ * 判断某个 task 的进程名是否等于 name。
+ *
+ * 早先只比较 task->comm, 有两个硬伤:
+ *   1. comm 只有 15 字节 (TASK_COMM_LEN-1), Android 包名普遍更长
+ *      (com.tencent.tmgp.dfm = 20 字符), 永远匹配不上;
+ *   2. 用 TASK_COMM_LEN 去 strncmp 会读到 comm 的 '\0' 之后, 属越界比较,
+ *      结果不可预测 —— 实测返回过 pid=1 (init)。
+ *
+ * 改为三级匹配, 任一命中即算找到:
+ *   a) comm 精确匹配          —— 短进程名, 如 "UE4"
+ *   b) comm 是 name 的前缀    —— 内核截断长包名时的形态
+ *   c) 读 cmdline 首段比较     —— 最可靠, 覆盖绝大多数情况
+ */
+/* 前向声明: 实现在文件后部 (nc_memrw 段之后) */
+static ssize_t access_remote_vm_nc(pid_t vpid, unsigned long target,
+                                   char __user *buffer, size_t count,
+                                   int write);
+static bool mem_task_name_matches(struct task_struct *task, const char *name)
+{
+    const size_t nlen = strlen(name);
+
+    if (nlen == 0)
+        return false;
+
+    /* a) comm 精确 */
+    {
+        const size_t clen = strlen(task->comm);
+        if (clen == nlen && strncmp(task->comm, name, nlen) == 0)
+            return true;
+        /* b) comm 是前缀 (被内核截断) */
+        if (clen > 0 && clen < nlen && strncmp(task->comm, name, clen) == 0)
+            return true;
+    }
+
+    /* c) cmdline 首段 */
+    {
+        struct mm_struct *mm = get_task_mm(task);
+        char buf[256];
+        int got = 0;
+
+        if (!mm)
+            return false;
+
+        if (!mm->arg_start || mm->arg_end <= mm->arg_start) {
+            mmput(mm);
+            return false;
+        }
+
+        got = (int) access_remote_vm_nc(task->pid, mm->arg_start, buf,
+                                        sizeof(buf) - 1, 0);
+        mmput(mm);
+
+        if (got > 0) {
+            buf[(got < (int) sizeof(buf)) ? got : (int) sizeof(buf) - 1] = '\0';
+            if (strncmp(buf, name, nlen) == 0)
+                return true;
+            if (strstr(buf, name) != NULL)
+                return true;
+        }
+    }
+
+    return false;
+}
+
 long mem_get_pid(void __user *arg)
 {
     struct mem_get_pid_req req;
@@ -45,9 +110,14 @@ long mem_get_pid(void __user *arg)
     req.name[sizeof(req.name) - 1] = '\0';
     req.out_pid = -1;
 
+    if (req.name[0] == '\0')
+        return -EINVAL;
+
     rcu_read_lock();
     for_each_process(task) {
-        if (strncmp(task->comm, req.name, TASK_COMM_LEN) == 0) {
+        if (task->pid <= 1)
+            continue;               /* init 不参与匹配 */
+        if (mem_task_name_matches(task, req.name)) {
             req.out_pid = task->pid;
             found = 1;
             break;
@@ -63,7 +133,6 @@ long mem_get_pid(void __user *arg)
 
     return 0;
 }
-
 long mem_get_pids(void __user *arg)
 {
     struct mem_get_pids_req req;
@@ -81,7 +150,7 @@ long mem_get_pids(void __user *arg)
 
     rcu_read_lock();
     for_each_process(task) {
-        if (strncmp(task->comm, req.name, TASK_COMM_LEN) != 0)
+        if (task->pid <= 1 || !mem_task_name_matches(task, req.name))
             continue;
 
         if (req.out_count < MEM_GET_PIDS_MAX)
